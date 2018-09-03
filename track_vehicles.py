@@ -227,9 +227,9 @@ class VehTracker():
         print('Number of car images: ' + str(len(cars)))
         print('Number of non-car images: ' + str(len(notcars)))
         
-        car_features = self.extract_features(cars, cspace='RGB', spatial_size=self.spatial_size,
+        car_features = self.extract_features(cars, cspace='YUV', spatial_size=self.spatial_size,
                                 hist_bins=self.hist_bins, hist_range=(0, 256))
-        notcar_features = self.extract_features(notcars, cspace='RGB', spatial_size=self.spatial_size,
+        notcar_features = self.extract_features(notcars, cspace='YUV', spatial_size=self.spatial_size,
                                 hist_bins=self.hist_bins, hist_range=(0, 256))
         
         print('Features extracted.')
@@ -264,7 +264,7 @@ class VehTracker():
         print("Finished gird search. Starting fit...")
         self.SVM.fit(X_train, y_train)
         t2 = time.time()
-        print(round(t2-t, 2), 'Seconds to train SVC...')
+        print(round(t2-t, 2), 'Seconds to train SVM...')
         print('Best parameters: ' + str(self.SVM.best_params_))
         # Check the score of the SVM
         print('Test Accuracy of SVM = ', round(self.SVM.score(X_test, y_test), 4))
@@ -277,7 +277,7 @@ class VehTracker():
         print(round(t2-t, 5), 'Seconds to predict', n_predict,'labels with SVM')
         
         # Save in pickle
-        pickle.dump( self.SVM, open( "SVM.p", "wb" ) )
+        pickle.dump( self.SVM, open( "SVM_YUV.p", "wb" ) )
 
         return
     
@@ -286,7 +286,8 @@ class VehTracker():
         Load SVM from pickled data.
         '''
         
-        self.SVM = pickle.load( open( "SVM.p", "rb" ) )
+        print("Loading pickled SVM")
+        self.SVM = pickle.load( open( "SVM_YUV.p", "rb" ) )
                 
         return
     
@@ -368,11 +369,11 @@ class VehTracker():
 ## Create and Train SVM
 img = mpimg.imread('test_images/test6.jpg')
 vehicle_tracker = VehTracker(img)
-vehicle_tracker.train_svm()
+#vehicle_tracker.train_svm()
+vehicle_tracker.load_SVM()
 
 
 ## Test Pipeline
-# Train SVM
 
 
 ## Process video
