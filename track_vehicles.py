@@ -39,6 +39,7 @@ class VehTracker():
         
         # SVM
         self.SVM = None
+        self.X_scaler = None
         
         # HYPERPARAMETERS
         self.ystart = 400
@@ -64,6 +65,8 @@ class VehTracker():
             return cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
         if conv == 'RGB2LUV':
             return cv2.cvtColor(img, cv2.COLOR_RGB2LUV)
+        if conv == 'RGB2YUV':
+            return cv2.cvtColor(img, cv2.COLOR_RGB2YUV)
 
     def get_hog_features(self, img, orient, pix_per_cell, cell_per_block, 
                             vis=False, feature_vec=True):
@@ -89,16 +92,25 @@ class VehTracker():
                            visualise=vis, feature_vector=feature_vec)
             return features
 
-    def bin_spatial(self, img, size=(32, 32)):
+    def bin_spatial(self, img, size=(32, 32), viz=False):
         '''
         Bin the given image spatially.
         '''
         color1 = cv2.resize(img[:,:,0], size).ravel()
         color2 = cv2.resize(img[:,:,1], size).ravel()
         color3 = cv2.resize(img[:,:,2], size).ravel()
-        return np.hstack((color1, color2, color3))
+        out = np.hstack((color1, color2, color3))
+        
+        if (viz):
+            plt.figure(1)
+            plt.plot(out)
+            plt.title('Spatial Histogram')
+            plt.savefig('output_images/spatial_histogram.png')
+            plt.show()        
+        
+        return out
                         
-    def color_hist(self, img, nbins=32, bins_range=(0, 256)):    
+    def color_hist(self, img, nbins=32, bins_range=(0, 256), viz=False):    
         '''
         Return a feature vector of a color histogram on given image.
         '''        
@@ -109,6 +121,14 @@ class VehTracker():
         # Concatenate the histograms into a single feature vector
         hist_features = np.concatenate((channel1_hist[0], channel2_hist[0], channel3_hist[0]))
         # Return the individual histograms, bin_centers and feature vector
+        
+        if (viz):
+            plt.figure(2)
+            plt.plot(hist_features)
+            plt.title('Color Histogram')
+            plt.savefig('output_images/color_histogram.png')
+            plt.show()  
+            
         return hist_features
     
     def extract_features(self, imgs, cspace='RGB', spatial_size=(32, 32),
@@ -135,14 +155,23 @@ class VehTracker():
             else: feature_image = np.copy(image)      
             # Apply bin_spatial() to get spatial color features
             spatial_features = self.bin_spatial(feature_image, size=spatial_size)
+            print("Shape of spatial histogram features: " + str(spatial_features.shape))
             # Apply color_hist() also with a color space option now
             hist_features = self.color_hist(feature_image, nbins=hist_bins, bins_range=hist_range)
+            print("Shape of color histogram features: " + str(hist_features.shape))
+            # Calculate HOG
+            hog1 = self.get_hog_features(feature_image[:,:,0], self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=True)
+            hog2 = self.get_hog_features(feature_image[:,:,1], self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=True)
+            hog3 = self.get_hog_features(feature_image[:,:,2], self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=True)
+            hog_features = np.hstack((hog1, hog2, hog3))
+            print("Shape of HOG features: " + str(hog_features.shape))
             # Append the new feature vector to the features list
-            features.append(np.concatenate((spatial_features, hist_features)))
+            features.append(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1))
+            print("Shape of total features: " + str(features[0].shape))
         # Return list of feature vectors
         return features
 
-    def find_cars(self, img, svc, X_scaler):
+    def find_cars(self, img, svc):
         '''
         Extract features using hog sub-sampling and make predictions.
         '''
@@ -150,7 +179,7 @@ class VehTracker():
         img = img.astype(np.float32)/255
         
         img_tosearch = img[self.ystart:self.ystop,:,:]
-        ctrans_tosearch = self.convert_color(img_tosearch, conv='RGB2YCrCb')
+        ctrans_tosearch = self.convert_color(img_tosearch, conv='RGB2YUV')
         if self.scale != 1:
             imshape = ctrans_tosearch.shape
             ctrans_tosearch = cv2.resize(ctrans_tosearch, (np.int(imshape[1]/self.scale), np.int(imshape[0]/self.scale)))
@@ -197,7 +226,7 @@ class VehTracker():
                 hist_features = self.color_hist(subimg, nbins=self.hist_bins)
     
                 # Scale features and make a prediction
-                test_features = X_scaler.transform(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1))    
+                test_features = self.X_scaler.transform(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1))    
                 #test_features = X_scaler.transform(np.hstack((shape_feat, hist_feat)).reshape(1, -1))    
                 test_prediction = svc.predict(test_features)
                 
@@ -248,10 +277,10 @@ class VehTracker():
         print('Data randomized.')
             
         # Fit a per-column scaler only on the training data
-        X_scaler = StandardScaler().fit(X_train)
+        self.X_scaler = StandardScaler().fit(X_train)
         # Apply the scaler to X_train and X_test
-        X_train = X_scaler.transform(X_train)
-        X_test = X_scaler.transform(X_test) 
+        X_train = self.X_scaler.transform(X_train)
+        X_test = self.X_scaler.transform(X_test) 
         
         print('Data normalized.')
         
@@ -277,7 +306,8 @@ class VehTracker():
         print(round(t2-t, 5), 'Seconds to predict', n_predict,'labels with SVM')
         
         # Save in pickle
-        pickle.dump( self.SVM, open( "SVM_YUV.p", "wb" ) )
+        pickle.dump( self.SVM, open( "SVM_YUV.p", "wb" ))
+        pickle.dump( self.X_scaler, open( "X_scaler.p", "wb" ))
 
         return
     
@@ -288,6 +318,7 @@ class VehTracker():
         
         print("Loading pickled SVM")
         self.SVM = pickle.load( open( "SVM_YUV.p", "rb" ) )
+        self.X_scaler = pickle.load( open( "X_scaler.p", "rb"))
                 
         return
     
@@ -338,7 +369,7 @@ class VehTracker():
         # Reset heat map
         self.heatmap = np.zeros_like(self.Frame[:,:,0]).astype(np.float)
         
-        out_img = find_cars(img, svc, X_scaler)
+        out_img = self.find_cars(img, svc)
         
         plt.imshow(out_img)
         
@@ -367,13 +398,28 @@ class VehTracker():
         return
     
 ## Create and Train SVM
-img = mpimg.imread('test_images/test6.jpg')
+# Instnatiate with test image
+img = mpimg.imread('test_images/test5.jpg')
 vehicle_tracker = VehTracker(img)
 #vehicle_tracker.train_svm()
-vehicle_tracker.load_SVM()
-
+#vehicle_tracker.load_SVM()
 
 ## Test Pipeline
+# plt.figure(0)
+# plt.imshow(img)
+# plt.title('Original Image')
+
+plt.figure(0)
+files = []
+files.append('training_data_vehicle/7.png')
+img = mpimg.imread('training_data_vehicle/7.png')
+plt.imshow(img)
+## TODO: Visualize by feeding extract_features a viz command to see different histograms.
+# Need to double check that real-time feature extraction will have the same size feature vector
+# Need to re-train SVM
+vehicle_tracker.extract_features(files, cspace='YUV', spatial_size=(32, 32), hist_bins=32, hist_range=(0, 256))
+plt.show()
+
 
 
 ## Process video
