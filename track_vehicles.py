@@ -44,17 +44,20 @@ class VehTracker():
         
         # HYPERPARAMETERS
         self.ystart = 400
-        self.ystop = 656
-        self.scale = 1.5
-        self.orient = 9
-        self.pix_per_cell = 8
+        self.ystop_list = (450, 490, 500, 525, 550, 600, 650)
+        #self.scale_list = (0.8, 1.0, 1.5, 3.0)
+        self.scale_list = (1.0, 1.0, 1.5, 1.5, 2.0, 3.0, 3.5)
+        self.orient = 10
+        self.pix_per_cell = 16
         self.cell_per_block = 2
+        self.cells_per_step = 1  # Instead of overlap, define how many cells to step         
+        self.window = 64 # 64 was the orginal sampling rate, with 8 cells and 8 pix per cell
         self.spatial_size = (16, 16)
         self.hist_bins = 32
-        self.heat_threshold = 2
-        self.heatmap_flt_size = 10
-        #self.svm_params = {'kernel':['linear'], 'C':[1, 10, 100]}
-        self.svm_params = {'kernel':['linear'], 'C':[100]}
+        self.heat_threshold = 25
+        self.heatmap_flt_size = 5
+        #self.svm_params = {'kernel':['linear'], 'C':[0.1, 1, 10, 100]}
+        self.svm_params = {'kernel':['linear'], 'C':[0.1]}
         
         return
     
@@ -70,6 +73,8 @@ class VehTracker():
             return cv2.cvtColor(img, cv2.COLOR_RGB2LUV)
         if conv == 'RGB2YUV':
             return cv2.cvtColor(img, cv2.COLOR_RGB2YUV)
+        if conv == 'RGB2HSV':
+            return cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
 
     def get_hog_features(self, img, orient, pix_per_cell, cell_per_block, 
                             vis=False, feature_vec=True):
@@ -115,6 +120,7 @@ class VehTracker():
         channel3_hist = np.histogram(img[:,:,2], bins=nbins)
         # Concatenate the histograms into a single feature vector
         hist_features = np.concatenate((channel1_hist[0], channel2_hist[0], channel3_hist[0]))
+        #hist_features = np.concatenate((channel1_hist[0], channel2_hist[0]))
         # Return the individual histograms, bin_centers and feature vector
             
         return hist_features
@@ -142,19 +148,22 @@ class VehTracker():
                     feature_image = cv2.cvtColor(image, cv2.COLOR_RGB2YUV)
             else: feature_image = np.copy(image)      
             # Apply bin_spatial() to get spatial color features
-            spatial_features = self.bin_spatial(feature_image, size=spatial_size)
+            #spatial_features = self.bin_spatial(feature_image, size=spatial_size)
             #print("Shape of spatial histogram features: " + str(spatial_features.shape))
             # Apply color_hist() also with a color space option now
-            hist_features = self.color_hist(feature_image, nbins=hist_bins, bins_range=hist_range)
+            #hist_features = self.color_hist(feature_image, nbins=hist_bins, bins_range=hist_range)
             #print("Shape of color histogram features: " + str(hist_features.shape))
             # Calculate HOG
             hog1 = self.get_hog_features(feature_image[:,:,0], self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=True)
             hog2 = self.get_hog_features(feature_image[:,:,1], self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=True)
             hog3 = self.get_hog_features(feature_image[:,:,2], self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=True)
             hog_features = np.hstack((hog1, hog2, hog3))
+            #hog_features = np.hstack((hog1, hog2))
             #print("Shape of HOG features: " + str(hog_features.shape))
             # Append the new feature vector to the features list
-            features.append(np.hstack((spatial_features, hist_features, hog_features)))
+            #features.append(np.hstack((spatial_features, hist_features, hog_features)))
+            #features.append(np.hstack((hist_features, hog_features)))
+            features.append(hog_features)
             #print("Shape of total features: " + str(features[0].shape))
         # Return list of feature vectors
         return features
@@ -207,6 +216,7 @@ class VehTracker():
             
         # Fit a per-column scaler only on the training data
         self.X_scaler = StandardScaler().fit(X_train)
+        pickle.dump( self.X_scaler, open( "X_scaler.p", "wb" ))
         # Apply the scaler to X_train and X_test
         X_train = self.X_scaler.transform(X_train)
         X_test = self.X_scaler.transform(X_test) 
@@ -222,6 +232,7 @@ class VehTracker():
         print("Finished gird search. Starting fit...")
         self.SVM.fit(X_train, y_train)
         t2 = time.time()
+        pickle.dump( self.SVM, open( "SVM.p", "wb" ))
         print(round(t2-t, 2), 'Seconds to train SVM...')
         print('Best parameters: ' + str(self.SVM.best_params_))
         # Check the score of the SVM
@@ -233,10 +244,6 @@ class VehTracker():
         print('For these',n_predict, 'labels: ', y_test[0:n_predict])
         t2 = time.time()
         print(round(t2-t, 5), 'Seconds to predict', n_predict,'labels with SVM')
-        
-        # Save in pickle
-        pickle.dump( self.SVM, open( "SVM_YUV.p", "wb" ))
-        pickle.dump( self.X_scaler, open( "X_scaler.p", "wb" ))
 
         return
     
@@ -246,7 +253,7 @@ class VehTracker():
         '''
         
         print("Loading pickled SVM")
-        self.SVM = pickle.load( open( "SVM_YUV.p", "rb" ) )
+        self.SVM = pickle.load( open( "SVM.p", "rb" ) )
         self.X_scaler = pickle.load( open( "X_scaler.p", "rb"))
                 
         return
@@ -258,67 +265,76 @@ class VehTracker():
         bbox_list = []
         draw_img = np.copy(img)
         img = img.astype(np.float32)/255
-        
-        img_tosearch = img[self.ystart:self.ystop,:,:]
-        ctrans_tosearch = self.convert_color(img_tosearch, conv='RGB2YUV')
-        if self.scale != 1:
-            imshape = ctrans_tosearch.shape
-            ctrans_tosearch = cv2.resize(ctrans_tosearch, (np.int(imshape[1]/self.scale), np.int(imshape[0]/self.scale)))
-            
-        ch1 = ctrans_tosearch[:,:,0]
-        ch2 = ctrans_tosearch[:,:,1]
-        ch3 = ctrans_tosearch[:,:,2]
-    
-        # Define blocks and steps as above
-        nxblocks = (ch1.shape[1] // self.pix_per_cell) - self.cell_per_block + 1
-        nyblocks = (ch1.shape[0] // self.pix_per_cell) - self.cell_per_block + 1 
-        nfeat_per_block = self.orient*self.cell_per_block**2
-        
-        # 64 was the orginal sampling rate, with 8 cells and 8 pix per cell
-        window = 64
-        nblocks_per_window = (window // self.pix_per_cell) - self.cell_per_block + 1
-        cells_per_step = 2  # Instead of overlap, define how many cells to step
-        nxsteps = (nxblocks - nblocks_per_window) // cells_per_step + 1
-        nysteps = (nyblocks - nblocks_per_window) // cells_per_step + 1
-        
-        # Compute individual channel HOG features for the entire image
-        hog1 = self.get_hog_features(ch1, self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=False)
-        hog2 = self.get_hog_features(ch2, self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=False)
-        hog3 = self.get_hog_features(ch3, self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=False)
-        
-        for xb in range(nxsteps):
-            for yb in range(nysteps):
-                ypos = yb*cells_per_step
-                xpos = xb*cells_per_step
-                # Extract HOG for this patch
-                hog_feat1 = hog1[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
-                hog_feat2 = hog2[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
-                hog_feat3 = hog3[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
-                hog_features = np.hstack((hog_feat1, hog_feat2, hog_feat3))
-    
-                xleft = xpos*self.pix_per_cell
-                ytop = ypos*self.pix_per_cell
-    
-                # Extract the image patch
-                subimg = cv2.resize(ctrans_tosearch[ytop:ytop+window, xleft:xleft+window], (64,64))
-              
-                # Get color features
-                spatial_features = self.bin_spatial(subimg, size=self.spatial_size)
-                hist_features = self.color_hist(subimg, nbins=self.hist_bins)
-    
-                # Scale features and make a prediction
-                test_features = self.X_scaler.transform(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1))    
-                #test_features = X_scaler.transform(np.hstack((shape_feat, hist_feat)).reshape(1, -1))    
-                test_prediction = self.SVM.predict(test_features)
                 
-                if test_prediction == 1:
-                    xbox_left = np.int(xleft*self.scale)
-                    ytop_draw = np.int(ytop*self.scale)
-                    win_draw = np.int(window*self.scale)
-                    bbox = ((xbox_left, ytop_draw+self.ystart),(xbox_left+win_draw,ytop_draw+win_draw+self.ystart))
-                    bbox_list.append(bbox)
-                    cv2.rectangle(draw_img,(xbox_left, ytop_draw+self.ystart),(xbox_left+win_draw,ytop_draw+win_draw+self.ystart),(0,0,255),6) 
+        it = 0
+        for scale in self.scale_list:
+            ystop = self.ystop_list[it]            
+            it = it + 1
+            
+            img_tosearch = img[self.ystart:ystop,:,:]
+            ctrans_tosearch = self.convert_color(img_tosearch, conv='RGB2YUV')
+            #print('Scale: ' + str(scale))
+            if scale != 1:
+                imshape = ctrans_tosearch.shape
+                ctrans_tosearch = cv2.resize(ctrans_tosearch, (np.int(imshape[1]/scale), np.int(imshape[0]/scale)))
+                #img_tosearch = cv2.resize(img_tosearch, (np.int(imshape[1]/scale), np.int(imshape[0]/scale)))
+                
+            ch1 = ctrans_tosearch[:,:,0]
+            ch2 = ctrans_tosearch[:,:,1]
+            ch3 = ctrans_tosearch[:,:,2]
+        
+            # Define blocks and steps as above
+            nxblocks = (ch1.shape[1] // self.pix_per_cell) - self.cell_per_block + 1
+            nyblocks = (ch1.shape[0] // self.pix_per_cell) - self.cell_per_block + 1 
+            nfeat_per_block = self.orient*self.cell_per_block**2
+            
+            nblocks_per_window = (self.window // self.pix_per_cell) - self.cell_per_block + 1
+            nxsteps = (nxblocks - nblocks_per_window) // self.cells_per_step + 1
+            nysteps = (nyblocks - nblocks_per_window) // self.cells_per_step + 1
+            
+            # Compute individual channel HOG features for the entire image
+            hog1 = self.get_hog_features(ch1, self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=False)
+            hog2 = self.get_hog_features(ch2, self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=False)
+            hog3 = self.get_hog_features(ch3, self.orient, self.pix_per_cell, self.cell_per_block, feature_vec=False)
+            
+            for xb in range(nxsteps):
+                for yb in range(nysteps):
+                    ypos = yb*self.cells_per_step
+                    xpos = xb*self.cells_per_step
+                    # Extract HOG for this patch
+                    hog_feat1 = hog1[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
+                    hog_feat2 = hog2[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
+                    hog_feat3 = hog3[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
+                    hog_features = np.hstack((hog_feat1, hog_feat2, hog_feat3))
+                    #hog_features = np.hstack((hog_feat1, hog_feat2))
+        
+                    xleft = xpos*self.pix_per_cell
+                    ytop = ypos*self.pix_per_cell
+        
+                    # Extract the image patch
+                    #subimg = cv2.resize(ctrans_tosearch[ytop:ytop+self.window, xleft:xleft+self.window], (64,64))
+                    #subimg = cv2.resize(img_tosearch[ytop:ytop+self.window, xleft:xleft+self.window], (64,64))
+                                      
+                    # Get color features
+                    #spatial_features = self.bin_spatial(subimg, size=self.spatial_size)
+                    #hist_features = self.color_hist(subimg, nbins=self.hist_bins)
+        
+                    # Scale features and make a prediction
+                    #test_features = self.X_scaler.transform(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1)) 
+                    #test_features = self.X_scaler.transform(np.hstack((hist_features, hog_features)).reshape(1, -1))  
+                    test_features = self.X_scaler.transform(hog_features.reshape(1, -1))  
+                    test_prediction = self.SVM.predict(test_features)
                     
+                    if test_prediction == 1:
+                        xbox_left = np.int(xleft*scale)
+                        ytop_draw = np.int(ytop*scale)
+                        win_draw = np.int(self.window*scale)
+                        bbox = ((xbox_left, ytop_draw+self.ystart),(xbox_left+win_draw,ytop_draw+win_draw+self.ystart))
+                        bbox_list.append(bbox)
+                        cv2.rectangle(draw_img,(xbox_left, ytop_draw+self.ystart),(xbox_left+win_draw,ytop_draw+win_draw+self.ystart),(0,0,255),6) 
+               
+            #print('bbox size: ' + str(len(bbox_list)))
+                        
         return draw_img, bbox_list
     
     def add_heat(self, bbox_list):
@@ -338,7 +354,7 @@ class VehTracker():
         Update heat with 0 for every location with insufficient heat.
         '''
         # Zero out pixels below the threshold
-        self.heatmap[self.heatmap <= thresh] = 0
+        self.heatmap[self.heatmap < thresh] = 0
         return
     
     def flt_heatmap(self):
@@ -359,7 +375,7 @@ class VehTracker():
         for heatmap in self.heatmap_list:
             out_heatmap = np.add(out_heatmap, heatmap)
             
-        out_heatmap = np.divide(out_heatmap,len(self.heatmap_list))
+        #out_heatmap = np.divide(out_heatmap,len(self.heatmap_list))
         
         return out_heatmap
     
@@ -400,10 +416,10 @@ class VehTracker():
         self.add_heat(bbox_list)
             
         # Apply threshold to help remove false positives
-        self.apply_threshold(self.heat_threshold)
+        #self.apply_threshold(self.heat_threshold)
         
         # Clip heat map to [0,255]    
-        self.heatmap = np.clip(self.heatmap, 0, 255) 
+        #self.heatmap = np.clip(self.heatmap, 0, 255) 
         
         # Filter list of heatmaps
         self.heatmap = self.flt_heatmap()
@@ -452,12 +468,12 @@ class VehTracker():
         fig = plt.figure(1)
         plt.suptitle('YUV Transformed Images')
         plt.subplot(1,2,1)
-        img_car_yuv = self.convert_color(img_car)
-        plt.imshow(img_car_yuv)
+        img_car_color_xfrm = self.convert_color(img_car)
+        plt.imshow(img_car_color_xfrm)
         plt.title('Car')
         plt.subplot(1,2,2)
-        img_not_car_yuv = self.convert_color(img_not_car)
-        plt.imshow(img_not_car_yuv)
+        img_not_car_color_xfrm = self.convert_color(img_not_car)
+        plt.imshow(img_not_car_color_xfrm)
         plt.title('Not Car')
         fig.tight_layout()
         plt.savefig('output_images/YUV_xfrm.png')
@@ -467,10 +483,10 @@ class VehTracker():
         fig = plt.figure(2)
         plt.suptitle('Spatial Histogram Features')
         plt.subplot(1,2,1)
-        plt.plot(self.bin_spatial(img_car_yuv))
+        plt.plot(self.bin_spatial(img_car_color_xfrm))
         plt.title('Car')
         plt.subplot(1,2,2)
-        plt.plot(self.bin_spatial(img_not_car_yuv))
+        plt.plot(self.bin_spatial(img_not_car_color_xfrm))
         plt.title('Not Car')
         fig.tight_layout()
         plt.savefig('output_images/spatial_histogram.png')
@@ -480,10 +496,10 @@ class VehTracker():
         fig = plt.figure(3)
         plt.suptitle('Color Histogram Features')
         plt.subplot(1,2,1)
-        plt.plot(self.color_hist(img_car_yuv))
+        plt.plot(self.color_hist(img_car_color_xfrm))
         plt.title('Car')
         plt.subplot(1,2,2)
-        plt.plot(self.color_hist(img_not_car_yuv))
+        plt.plot(self.color_hist(img_not_car_color_xfrm))
         plt.title('Not Car')
         fig.tight_layout()
         plt.savefig('output_images/color_histogram.png')
@@ -492,32 +508,32 @@ class VehTracker():
         # Plot HOG visualization
         fig = plt.figure(4)
         plt.suptitle('HOG')
-        hog1, img_hog_car_1 = self.get_hog_features(img_car_yuv[:,:,0], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
-        hog2, img_hog_car_2 = self.get_hog_features(img_car_yuv[:,:,1], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
-        hog3, img_hog_car_3 = self.get_hog_features(img_car_yuv[:,:,2], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
+        hog1, img_hog_car_1 = self.get_hog_features(img_car_color_xfrm[:,:,0], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
+        hog2, img_hog_car_2 = self.get_hog_features(img_car_color_xfrm[:,:,1], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
+        hog3, img_hog_car_3 = self.get_hog_features(img_car_color_xfrm[:,:,2], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
         hog_car_features = np.hstack((hog1, hog2, hog3))
-        hog1, img_hog_not_car_1 = self.get_hog_features(img_not_car_yuv[:,:,0], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
-        hog2, img_hog_not_car_2 = self.get_hog_features(img_not_car_yuv[:,:,1], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
-        hog3, img_hog_not_car_3 = self.get_hog_features(img_not_car_yuv[:,:,2], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
+        hog1, img_hog_not_car_1 = self.get_hog_features(img_not_car_color_xfrm[:,:,0], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
+        hog2, img_hog_not_car_2 = self.get_hog_features(img_not_car_color_xfrm[:,:,1], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
+        hog3, img_hog_not_car_3 = self.get_hog_features(img_not_car_color_xfrm[:,:,2], self.orient, self.pix_per_cell, self.cell_per_block, vis=True, feature_vec=True)
         hog_not_car_features = np.hstack((hog1, hog2, hog3))
         plt.subplot(3,2,1)
         plt.imshow(img_hog_car_1)
-        plt.title('Car - Y')
+        plt.title('Car - Ch1')
         plt.subplot(3,2,3)
         plt.imshow(img_hog_car_2)
-        plt.title('Car - U')
+        plt.title('Car - Ch2')
         plt.subplot(3,2,5)
         plt.imshow(img_hog_car_3)
-        plt.title('Car - V')
+        plt.title('Car - Ch3')
         plt.subplot(3,2,2)
         plt.imshow(img_hog_not_car_1)
-        plt.title('Not Car - Y')
+        plt.title('Not Car - Ch1')
         plt.subplot(3,2,4)
         plt.imshow(img_hog_not_car_2)
-        plt.title('Not Car - U')
+        plt.title('Not Car - Ch2')
         plt.subplot(3,2,6)
         plt.imshow(img_hog_not_car_3)
-        plt.title('Not Car - V')
+        plt.title('Not Car - Ch3')
         fig.tight_layout()
         plt.savefig('output_images/hog_viz.png')
         #plt.show()
@@ -666,6 +682,6 @@ if (True):
     ## Where start_second and end_second are integer values representing the start and end of the subclip
     ## You may also uncomment the following line for a subclip of the first 5 seconds
     ##clip1 = VideoFileClip("test_videos/solidWhiteRight.mp4").subclip(0,5)
-    clip = VideoFileClip("project_video.mp4").subclip(0,5)
+    clip = VideoFileClip("project_video.mp4")
     video_clip = clip.fl_image(vehicle_tracker.process_frame) #NOTE: this function expects color images!!
     video_clip.write_videofile(video_output, audio=False)
